@@ -1,0 +1,192 @@
+---
+- name: "Set facts for the Operator groups"
+  set_fact:
+    OG_OPERATION: ""
+    OG_NAMESTANZA: ""
+
+- name: "Generate namespace name if not provided"
+  shell: "{{ lookup('template', 'create_new_namespace.sh') }}"
+  register: namespace
+  when: OO_INSTALL_NAMESPACE == ""
+
+- name: "Set OO_INSTALL_NAMESPACE"
+  set_fact:
+    OO_INSTALL_NAMESPACE: "{{ namespace['stdout'] }}"
+  when: OO_INSTALL_NAMESPACE == ""
+
+- name: "check if OO_INSTALL_NAMESPACE exists or not"
+  shell: "oc get namespace {{ OO_INSTALL_NAMESPACE }}" 
+
+- name: "Set OO_TARGET_NAMESPACES when value is '!install'"
+  set_fact:
+    OO_TARGET_NAMESPACES: "{{ OO_INSTALL_NAMESPACE }}"
+
+- name: debug
+  debug:
+    msg: "Installing {{ OO_PACKAGE }} in namespace {{ OO_INSTALL_NAMESPACE }} "
+
+- name: "Get Opertorworkgroup"
+  shell: "oc -n {{ OO_INSTALL_NAMESPACE }} get operatorgroup -o jsonpath='{.items[*].metadata.name}' || true"
+  register: get_operator_workgroup_output
+
+- name: "Set variable for OPERATORGROUP"
+  set_fact:
+    OPERATORGROUP: "{{ get_operator_workgroup_output['stdout_lines'] }}"
+
+- name: debug
+  debug:
+    msg: "{{ get_operator_workgroup_output['stdout_lines'] }}"
+
+- name: "When OperatorGroup does not exist"
+  block:
+    - name: "Display Message"
+      debug:
+        msg: "OperatorGroup does not exists creating it {{ get_operator_workgroup_output['stdout_lines'] }}"
+    - name: "Set OperatorGroup Operation and OperatorNameStanza"
+      set_fact:
+        OG_OPERATION: "create"
+        OG_NAMESTANZA: "generateName: oo-"
+  when: OPERATORGROUP | length == 0
+
+- name: "When Multiple OperatorGroups are found"
+  block:
+    - name: "Generate OperatorGroup yaml into ARTIFACT_DIR"
+      shell: "oc -n {{ OO_INSTALL_NAMESPACE }} get operatorgroup -o yaml > {{ ARTIFACT_DIR }}/operatorgroups-{{ OO_INSTALL_NAMESPACE }}.yaml"
+      register: operator_group_yaml
+    - name: "Display operator_group yaml"
+      debug:
+        msg: "{{ operator_group_yaml.stdout }}"
+    - name: "Fail on multiple OperatorGroups"
+      fail:
+        msg: "Error: multiple OperatorGroups in namespace {{ OO_INSTALL_NAMESPACE }}: {{ OPERATORGROUP }}"
+  when: OPERATORGROUP | length > 1
+
+- name: "When single OperatorGroup is found"
+  block:
+    - name: "Display Message"
+      debug:
+        msg: "OperatorGroup {{ OPERATORGROUP }} exists: modifying it"
+    - name: "Update OperatorGroup variables"
+      set_fact:
+        OG_OPERATION: "apply"
+        OG_NAMESTANZA: "name: "
+    - name: "Display operator_group_yaml"
+      debug:
+        msg: "{{ operator_group_yaml.stdout }}"
+    - name: "Fail on multiple OperatorGroups"
+      fail:
+        msg: "Error: multiple OperatorGroups in namespace {{ OO_INSTALL_NAMESPACE }}: {{ OPERATORGROUP }}"
+  when: OPERATORGROUP | length == 1
+
+- name: "Create OperatorGroup"
+  shell: "{{ lookup('template', 'create_operatorgroup.sh') }}"
+  register: operatorgroup_output
+
+- name: "Display created operatorGroup"
+  debug:
+    msg: "OperatorGroup name is {{ operatorgroup_output.stdout }}"
+
+- name: "Setfact for OperatorGroup"
+  set_fact:
+    OPERATORGROUP: "{{ operatorgroup_output.stdout }}"
+
+- name: "Display Message"
+  debug:
+    msg: "Creating CatalogSource"
+
+- name: "Create catalogSource"
+  shell: "{{ lookup('template', 'create_catalogsource.sh') }}"
+  register: create_catalogsource_output
+
+- name: "Setfact for catalogSource"
+  set_fact:
+    CATSRC: "{{ create_catalogsource_output.stdout }}"
+
+- name: "Display created catalogsource"
+  debug:
+    msg: "CatalogSource name is {{ CATSRC }}"
+
+- name: "Display Message"
+  debug:
+    msg: "Creating Subscription"
+
+- name: "Create subscription"
+  shell: "{{ lookup('template', 'create_subscription.sh') }}"
+  register: create_subscription_output
+
+- name: "Setfact for subscription"
+  set_fact:
+    SUB: "{{ create_subscription_output.stdout }}"
+
+- name: "Retry a task until a certain condition is met"
+  ansible.builtin.shell: /usr/bin/foo
+  register: result
+  until: result.stdout.find("all systems go") != -1
+  retries: 5
+  delay: 10
+
+#for _ in $(seq 1 30); do
+#    CSV=$(oc -n "$OO_INSTALL_NAMESPACE" get subscription "$SUB" -o jsonpath='{.status.installedCSV}' || true)
+#    if [[ -n "$CSV" ]]; then
+#        if [[ "$(oc -n "$OO_INSTALL_NAMESPACE" get csv "$CSV" -o jsonpath='{.status.phase}')" == "Succeeded" ]]; then
+#            echo "ClusterServiceVersion \"$CSV\" ready"
+#            exit 0
+#        fi
+#    fi
+#    sleep 10
+#done
+
+echo "Timed out waiting for csv to become ready"
+
+- name: "Setpath for Namespace and OperatorGroup Artifact"
+  set_fact:
+    NS_ART: "{{ ARTIFACT_DIR }}/ns-{{ OO_INSTALL_NAMESPACE }}.yaml"
+    OG_ART: "{{ ARTIFACT_DIR }}/ns-{{ OPERATORGROUP }}.yaml"
+    CS_ART: "{{ ARTIFACT_DIR }}/cs-{{ CATSRC }}.yaml"
+    SUB_ART: "{{ ARTIFACT_DIR }}/sub-{{ SUB }}.yaml"
+
+- name: "Dump OO_INSTALL_NAMESPACE to Artifacts"
+  shell: "oc get namespace {{ OO_INSTALL_NAMESPACE }} -o yaml > {{ NS_ART }}"
+
+- name: "Dump OperatorGroup to artifacts"
+  shell: "oc get -n {{ OO_INSTALL_NAMESPACE }} operatorgroup {{ OPERATORGROUP }} -o yaml > {{ OG_ART }}"
+
+- name: "Dump CatalogSource to artifacts"
+  shell: "oc get -n {{ OO_INSTALL_NAMESPACE }} catalogsource {{ CATSRC }} -o yaml > {{ CS_ART }}"
+
+#for field in message reason; do
+#    VALUE="$(oc get -n "$OO_INSTALL_NAMESPACE" catalogsource "$CATSRC" -o jsonpath="{.status.$field}" || true)"
+#    if [[ -n "$VALUE" ]]; then
+#        echo "  CatalogSource $CATSRC status $field: $VALUE"
+#    fi
+#done
+
+- name: "Dump Subscription into ARTIFACT_DIR"
+  shell: "oc get -n {{ OO_INSTALL_NAMESPACE }} subscription {{ SUB }} -o yaml > {{ SUB_ART }}"
+
+
+#for field in state reason; do
+#    VALUE="$(oc get -n "$OO_INSTALL_NAMESPACE" subscription "$SUB" -o jsonpath="{.status.$field}" || true)"
+#    if [[ -n "$VALUE" ]]; then
+#        echo "  Subscription $SUB status $field: $VALUE"
+#    fi
+#done
+
+#if [[ -n "$CSV" ]]; then
+#    CSV_ART="$ARTIFACT_DIR/csv-$CSV.yaml"
+#    echo "ClusterServiceVersion $CSV was created but never became ready"
+#    echo "Dumping ClusterServiceVersion $CSV as $CSV_ART"
+#    oc get -n "$OO_INSTALL_NAMESPACE" csv "$CSV" -o yaml >"$CSV_ART"
+#    for field in phase message reason; do
+#        VALUE="$(oc get -n "$OO_INSTALL_NAMESPACE" csv "$CSV" -o jsonpath="{.status.$field}" || true)"
+#        if [[ -n "$VALUE" ]]; then
+#            echo "  ClusterServiceVersion $CSV status $field: $VALUE"
+#        fi
+#    done
+#else
+#    CSV_ART="$ARTIFACT_DIR/$OO_INSTALL_NAMESPACE-all-csvs.yaml"
+#    echo "ClusterServiceVersion $CSV was never created"
+#    echo "Dumping all ClusterServiceVersions in namespace $OO_INSTALL_NAMESPACE to $CSV_ART"
+#    oc get -n "$OO_INSTALL_NAMESPACE" csv -o yaml >"$CSV_ART"
+#fi
+#exit 1

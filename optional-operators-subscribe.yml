@@ -1,0 +1,26 @@
+---
+- name: "Run optional operators subscribe"
+  hosts: localhost
+  become: false
+  gather_facts: false
+
+  vars:
+    OO_INDEX: ""
+    OO_PACKAGE: ""
+    OO_CHANNEL: ""
+    # The namespace into which the operator and catalog will be
+    # installed. If empty, a new namespace will be created.
+    OO_INSTALL_NAMESPACE: ""
+    # A comma-separated list of namespaces the operator will target. If
+    # empty, all namespaces will be targeted.  If no OperatorGroup exists
+    # in $OO_INSTALL_NAMESPACE, a new one will be created with its target
+    # namespaces set to $OO_TARGET_NAMESPACES, otherwise the existing
+    # OperatorGroup's target namespace set will be replaced. The special
+    # value "!install" will set the target namespace to the operator's
+    # installation namespace.
+    OO_TARGET_NAMESPACES: ""
+
+  tasks:
+    - name: "Run optional operators subscribe step"
+      include_role:
+        name: optional-operators-subscribe
